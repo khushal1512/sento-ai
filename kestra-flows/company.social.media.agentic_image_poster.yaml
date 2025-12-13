@@ -1,0 +1,148 @@
+id: agentic_image_poster
+namespace: company.social.media
+
+inputs:
+  - id: prompt
+    type: STRING
+    defaults: "A cyberpunk street food vendor in Tokyo, neon lights, rainy night"
+
+tasks:
+  - id: enhance_prompt
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    systemMessage: |
+      You are an expert AI Art Director and Social Media Manager.
+      You must output a VALID JSON object (and nothing else).
+      The JSON must have these keys:
+      1. "image_prompt": A highly detailed, artistic description for an AI image generator. Focus on lighting, texture, and composition 1080 * 1080p image.
+      2. "caption": An engaging Instagram caption very short one.
+      3. "hashtags": A string of 5 relevant hashtags.
+    prompt: "Create content for this image idea: {{ trigger.body.prompt ?? inputs.prompt }}"
+
+  - id: parse_json
+    type: io.kestra.plugin.scripts.python.Script
+    containerImage: python:3.11-slim
+    beforeCommands:
+      - pip install kestra
+    script: |
+      import json
+      from kestra import Kestra
+
+      # Get raw AI output
+      raw_text = """{{ outputs.enhance_prompt.textOutput }}"""
+
+      # Clean potential markdown
+      clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+      try:
+          data = json.loads(clean_text)
+          
+          Kestra.outputs({
+              "visual_prompt": data.get("image_prompt"),
+              "social_caption": data.get("caption"),
+              "social_hashtags": data.get("hashtags")
+          })
+      except Exception as e:
+          print(f"JSON Parse Error. Raw text: {clean_text}")
+          raise e
+
+  - id: generate_image
+    type: io.kestra.plugin.ai.completion.ImageGeneration
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini 
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+      modelName: "gemini-2.5-flash-image" 
+    prompt: "{{ outputs.parse_json.vars.visual_prompt }}" 
+
+  - id: publish_image
+    type: io.kestra.plugin.scripts.python.Script
+    containerImage: python:3.11-slim
+    beforeCommands:
+      - pip install requests
+    env:
+      IK_ID: "svh4zwy9a"
+      IK_KEY: "{{ secret('IMAGEKIT_PRIVATE_KEY') }}"
+      IG_TOKEN: "{{ secret('INSTAGRAM_ACCESS_TOKEN') }}"
+      IG_ID: "{{ secret('INSTAGRAM_ACCOUNT_ID') }}"
+
+      CAPTION: "{{ outputs.parse_json.vars.social_caption }}"
+      HASHTAGS: "{{ outputs.parse_json.vars.social_hashtags }}"
+
+    inputFiles:
+      generated_image.png: "{{ outputs.generate_image.imageUrl }}" 
+
+    script: |
+      import os
+      import requests
+      import time
+
+      # --- CONFIG ---
+      IK_KEY = os.environ["IK_KEY"]
+      IG_TOKEN = os.environ["IG_TOKEN"]
+      IG_ID = os.environ["IG_ID"]
+
+      final_caption = f"{os.environ['CAPTION']}\n\n{os.environ['HASHTAGS']}"
+      FILE_PATH = "generated_image.png"
+
+      # 1. UPLOAD TO IMAGEKIT
+      print("🚀 Uploading to ImageKit...")
+      with open(FILE_PATH, "rb") as f:
+          url = "https://upload.imagekit.io/api/v1/files/upload"
+          auth = (IK_KEY, "")
+          files = {"file": f}
+          payload = {
+              "fileName": f"ai_img_{int(time.time())}.png",
+              "useUniqueFileName": "true",
+              "folder": "/ai_images"
+          }
+          
+          resp = requests.post(url, files=files, data=payload, auth=auth)
+          if resp.status_code != 200:
+              raise Exception(f"ImageKit Error: {resp.text}")
+          
+          public_url = resp.json()['url']
+          print(f"✅ Image Hosted: {public_url}")
+
+      print("📸 Creating Instagram Container...")
+
+      ig_url = f"https://graph.facebook.com/v19.0/{IG_ID}/media"
+      ig_payload = {
+          "image_url": public_url,
+          "caption": final_caption,
+          "access_token": IG_TOKEN
+      }
+
+      req = requests.post(ig_url, params=ig_payload)
+      if req.status_code != 200:
+          raise Exception(f"IG Create Error: {req.text}")
+          
+      container_id = req.json()['id']
+      print(f"   Container ID: {container_id}")
+
+      print("🚀 Publishing...")
+
+      time.sleep(8) 
+
+      pub_url = f"https://graph.facebook.com/v19.0/{IG_ID}/media_publish"
+      pub_resp = requests.post(pub_url, params={
+          "creation_id": container_id,
+          "access_token": IG_TOKEN
+      })
+
+      if pub_resp.status_code == 200:
+          print(f"🎉 SUCCESS! Post ID: {pub_resp.json().get('id')}")
+      else:
+          raise Exception(f"Publish Error: {pub_resp.text}")
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: "my-image-secret"
+
+errors:
+  - id: failure_alert
+    type: io.kestra.plugin.core.log.Log
+    message: "❌ FAILED: {{ execution.state.current }}"

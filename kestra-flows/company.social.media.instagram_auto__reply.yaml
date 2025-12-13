@@ -1,0 +1,93 @@
+id: instagram_auto_reply
+namespace: company.social.media
+
+triggers:
+  - id: instagram_webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: "test-secret" 
+
+tasks:
+  - id: parse_webhook
+    type: io.kestra.plugin.scripts.python.Script
+    containerImage: python:3.11-slim
+    beforeCommands:
+      - pip install kestra
+    script: |
+      import json
+      from kestra import Kestra
+      
+      # The webhook body is available in {{ trigger.body }}
+      # Note: In production, Meta sends a 'hub.challenge' for verification.
+      # This script assumes it's receiving the actual event data.
+      
+      body = {{ trigger.body }}
+      
+      try:
+          # Meta structure: entry -> changes -> value -> text/id
+          entry = body['entry'][0]
+          change = entry['changes'][0]
+          value = change['value']
+          
+          comment_id = value.get('id')
+          comment_text = value.get('text')
+          user_id = value.get('from', {}).get('id')
+          
+          print(f"💬 New Comment: {comment_text} (ID: {comment_id})")
+          
+          Kestra.outputs({
+              "comment_id": comment_id,
+              "comment_text": comment_text,
+              "user_id": user_id
+          })
+      except Exception as e:
+          print(f"Skipping: Not a valid comment event. Body: {body}")
+          # We don't fail, just exit cleanly for non-comment events
+          Kestra.outputs({"comment_id": "SKIP"})
+
+  - id: draft_reply
+    type: io.kestra.plugin.ai.agent.AIAgent
+    runIf: "{{ outputs.parse_webhook.vars.comment_id != 'SKIP' }}"
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    systemMessage: |
+      You are a friendly social media manager. 
+      Analyze the user's comment. 
+      - If it's positive, thank them warmly.
+      - If it's a question, provide a helpful generic answer or ask them to DM.
+      - If it's spam, reply with "IGNORE".
+      Keep the reply short (under 20 words) and use one emoji.
+    prompt: "User Comment: {{ outputs.parse_webhook.vars.comment_text }}"
+
+  - id: post_reply
+    type: io.kestra.plugin.scripts.python.Script
+    runIf: "{{ outputs.parse_webhook.vars.comment_id != 'SKIP' and outputs.draft_reply.textOutput != 'IGNORE' }}"
+    containerImage: python:3.11-slim
+    beforeCommands:
+      - pip install requests
+    env:
+      IG_TOKEN: "{{ secret('INSTAGRAM_ACCESS_TOKEN') }}"
+      COMMENT_ID: "{{ outputs.parse_webhook.vars.comment_id }}"
+      REPLY_TEXT: "{{ outputs.draft_reply.textOutput }}"
+    script: |
+      import os
+      import requests
+
+      token = os.environ["IG_TOKEN"]
+      comment_id = os.environ["COMMENT_ID"]
+      message = os.environ["REPLY_TEXT"]
+
+      print(f"📝 Replying to {comment_id}: {message}")
+
+      url = f"https://graph.facebook.com/v19.0/{comment_id}/replies"
+      
+      resp = requests.post(url, params={
+          "message": message,
+          "access_token": token
+      })
+
+      if resp.status_code == 200:
+          print(f"✅ Reply Sent! ID: {resp.json().get('id')}")
+      else:
+          raise Exception(f"Failed to reply: {resp.text}")
