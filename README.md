@@ -6,6 +6,7 @@
 
 Sento AI is an intelligent social media automation platform that empowers creators and businesses to manage their online presence effortlessly. Using AI agents, Sento generates engaging content, creates reels, and posts directly to Instagram and Facebook — all from a simple text prompt.
 
+## [Live Link](https://sento-ai.vercel.app)
 ## The Problem
 
 Small and medium businesses (MSMEs) often lack access to expensive marketing teams and professional social media expertise. Creating consistent, high-quality content across multiple platforms is time-consuming and requires skills that many entrepreneurs simply don't have. 
@@ -97,7 +98,10 @@ The platform follows a modern microservices architecture:
 - **Publishing**: Direct integration with Meta Graph API for Instagram/Facebook
 
 ---
+## Note: 
+- **To run the project, you must first setup Kestra using Docker Compose and the Next app locally. Deployed version is just for frontend. 
 
+---
 ## Getting Started
 
 1. Clone the repository
@@ -107,7 +111,7 @@ The platform follows a modern microservices architecture:
 5. Access Kestra at `http://localhost:8080`
 6. Run the Next.js app with `pnpm dev`
 
-For detailed setup instructions, visit the [Documentation](/docs).
+For detailed setup instructions, visit the [Documentation](https://sento-ai.vercel.app/docs).
 
 ---
 
